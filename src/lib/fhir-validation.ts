@@ -357,3 +357,287 @@ export function validateECRRuleCondition(condition: any): FHIRValidationResult {
     warnings
   };
 }
+
+// Enhanced rule execution engine for testing conditions against FHIR data
+export interface RuleExecutionResult {
+  conditionMet: boolean;
+  executedConditions: Array<{
+    condition: any;
+    result: boolean;
+    extractedValue: any;
+    error?: string;
+  }>;
+  overallResult: boolean;
+  logicOperator: 'AND' | 'OR';
+  executionTimeMs: number;
+}
+
+export function executeRuleAgainstFHIR(
+  conditions: any[],
+  fhirResources: any[],
+  logicOperator: 'AND' | 'OR' = 'AND'
+): RuleExecutionResult {
+  const startTime = Date.now();
+  const executedConditions: RuleExecutionResult['executedConditions'] = [];
+  
+  for (const condition of conditions) {
+    const conditionResult = {
+      condition,
+      result: false,
+      extractedValue: null as any,
+      error: undefined as string | undefined
+    };
+
+    try {
+      // Find matching resource type
+      const matchingResources = fhirResources.filter(resource => 
+        resource.resourceType === condition.resourceType
+      );
+
+      if (matchingResources.length === 0) {
+        conditionResult.error = `No ${condition.resourceType} resources found`;
+        executedConditions.push(conditionResult);
+        continue;
+      }
+
+      // Test condition against each matching resource
+      for (const resource of matchingResources) {
+        const extractedValue = extractFHIRData(resource, condition.path);
+        conditionResult.extractedValue = extractedValue;
+
+        // Evaluate condition based on operator
+        const conditionMet = evaluateCondition(extractedValue, condition.operator, condition.value);
+        
+        if (conditionMet) {
+          conditionResult.result = true;
+          break; // If any resource matches, condition is met
+        }
+      }
+    } catch (error) {
+      conditionResult.error = `Execution error: ${error}`;
+    }
+
+    executedConditions.push(conditionResult);
+  }
+
+  // Calculate overall result based on logic operator
+  let overallResult: boolean;
+  if (logicOperator === 'AND') {
+    overallResult = executedConditions.every(c => c.result);
+  } else {
+    overallResult = executedConditions.some(c => c.result);
+  }
+
+  return {
+    conditionMet: overallResult,
+    executedConditions,
+    overallResult,
+    logicOperator,
+    executionTimeMs: Date.now() - startTime
+  };
+}
+
+// Helper function to evaluate individual conditions
+function evaluateCondition(extractedValue: any, operator: string, expectedValue: any): boolean {
+  if (extractedValue === null || extractedValue === undefined) {
+    return operator === 'exists' ? false : false;
+  }
+
+  switch (operator) {
+    case 'equals':
+    case '=':
+      return extractedValue === expectedValue;
+    
+    case 'not_equals':
+    case '!=':
+      return extractedValue !== expectedValue;
+    
+    case 'contains':
+      return String(extractedValue).toLowerCase().includes(String(expectedValue).toLowerCase());
+    
+    case 'in':
+      if (Array.isArray(expectedValue)) {
+        return expectedValue.includes(extractedValue);
+      }
+      return String(expectedValue).split(',').map(v => v.trim()).includes(String(extractedValue));
+    
+    case 'greater':
+    case '>':
+      return Number(extractedValue) > Number(expectedValue);
+    
+    case 'less':
+    case '<':
+      return Number(extractedValue) < Number(expectedValue);
+    
+    case 'exists':
+      return extractedValue !== null && extractedValue !== undefined;
+    
+    case 'matches':
+      try {
+        const regex = new RegExp(expectedValue, 'i');
+        return regex.test(String(extractedValue));
+      } catch {
+        return false;
+      }
+    
+    default:
+      return false;
+  }
+}
+
+// Generate test FHIR data for rule testing
+export function generateTestFHIRData(resourceTypes: string[]): any[] {
+  const testData: any[] = [];
+
+  resourceTypes.forEach(resourceType => {
+    switch (resourceType) {
+      case 'Patient':
+        testData.push({
+          resourceType: 'Patient',
+          id: 'test-patient-1',
+          name: [{ family: 'Johnson', given: ['Sarah'] }],
+          gender: 'female',
+          birthDate: '1985-03-15',
+          address: [{ state: 'CA', city: 'Los Angeles', postalCode: '90210' }],
+          telecom: [{ system: 'phone', value: '555-0123' }]
+        });
+        break;
+
+      case 'Condition':
+        testData.push({
+          resourceType: 'Condition',
+          id: 'test-condition-1',
+          code: {
+            coding: [{
+              system: 'http://hl7.org/fhir/sid/icd-10',
+              code: 'U07.1',
+              display: 'COVID-19'
+            }]
+          },
+          subject: { reference: 'Patient/test-patient-1' },
+          onsetDateTime: '2024-02-10T08:30:00Z',
+          clinicalStatus: {
+            coding: [{ system: 'http://terminology.hl7.org/CodeSystem/condition-clinical', code: 'active' }]
+          }
+        });
+        break;
+
+      case 'Observation':
+        testData.push({
+          resourceType: 'Observation',
+          id: 'test-observation-1',
+          status: 'final',
+          code: {
+            coding: [{
+              system: 'http://loinc.org',
+              code: '94500-6',
+              display: 'SARS-CoV-2 (COVID-19) RNA [Presence] in Respiratory specimen by NAA with probe detection'
+            }]
+          },
+          subject: { reference: 'Patient/test-patient-1' },
+          effectiveDateTime: '2024-02-10T10:30:00Z',
+          valueCodeableConcept: {
+            coding: [{
+              system: 'http://snomed.info/sct',
+              code: '260373001',
+              display: 'Detected'
+            }]
+          }
+        });
+        break;
+
+      case 'Encounter':
+        testData.push({
+          resourceType: 'Encounter',
+          id: 'test-encounter-1',
+          status: 'finished',
+          class: { system: 'http://terminology.hl7.org/CodeSystem/v3-ActCode', code: 'AMB' },
+          type: [{
+            coding: [{
+              system: 'http://snomed.info/sct',
+              code: '185345009',
+              display: 'Encounter for symptom'
+            }]
+          }],
+          subject: { reference: 'Patient/test-patient-1' },
+          period: {
+            start: '2024-02-10T08:00:00Z',
+            end: '2024-02-10T09:00:00Z'
+          }
+        });
+        break;
+    }
+  });
+
+  return testData;
+}
+
+// Advanced FHIRPath testing with detailed results
+export interface FHIRPathTestResult {
+  isValid: boolean;
+  path: string;
+  results: Array<{
+    resourceId: string;
+    resourceType: string;
+    extractedValue: any;
+    dataType: string;
+  }>;
+  errors: string[];
+  suggestions?: string[];
+}
+
+export function testFHIRPathOnResources(
+  fhirPath: string,
+  resources: any[]
+): FHIRPathTestResult {
+  const results: FHIRPathTestResult['results'] = [];
+  const errors: string[] = [];
+  const suggestions: string[] = [];
+
+  // Validate FHIRPath syntax first
+  const pathValidation = validateFHIRPath(fhirPath);
+  if (!pathValidation.isValid) {
+    return {
+      isValid: false,
+      path: fhirPath,
+      results: [],
+      errors: pathValidation.errors,
+      suggestions
+    };
+  }
+
+  // Test path against each resource
+  for (const resource of resources) {
+    try {
+      const extractedValue = extractFHIRData(resource, fhirPath);
+      
+      results.push({
+        resourceId: resource.id || 'unknown',
+        resourceType: resource.resourceType || 'unknown',
+        extractedValue,
+        dataType: Array.isArray(extractedValue) 
+          ? 'array' 
+          : extractedValue === null 
+            ? 'null' 
+            : typeof extractedValue
+      });
+
+      // Add suggestions for empty results
+      if (extractedValue === null || extractedValue === undefined) {
+        if (!suggestions.includes(`No data found for path "${fhirPath}" in ${resource.resourceType}`)) {
+          suggestions.push(`No data found for path "${fhirPath}" in ${resource.resourceType}`);
+        }
+      }
+    } catch (error) {
+      errors.push(`Error evaluating path "${fhirPath}" on ${resource.resourceType}: ${error}`);
+    }
+  }
+
+  return {
+    isValid: errors.length === 0,
+    path: fhirPath,
+    results,
+    errors,
+    suggestions
+  };
+}
