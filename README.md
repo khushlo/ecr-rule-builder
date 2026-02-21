@@ -174,7 +174,7 @@ If you encounter any issues or have suggestions for improvements, please [open a
 
 For support and questions, please reach out through:
 - GitHub Issues
-- Email: [Your contact email]
+- Email: khushalwork01@gmail.com
 
 ## 🚦 Roadmap
 
