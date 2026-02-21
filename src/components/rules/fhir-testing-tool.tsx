@@ -16,18 +16,27 @@ import {
   Play, 
   Copy,
   Download,
-  FileText
+  FileText,
+  Plus,
+  Trash2
 } from 'lucide-react'
 
 interface FHIRTestResult {
   testType: string
   validation: {
-    isValid: boolean
+    isValid?: boolean
+    conditionMet?: boolean
+    overallResult?: boolean
     errors: string[]
     warnings: string[]
     extractedData?: any
+    matchingResources?: any[]
+    totalResourcesEvaluated?: number
+    testDataSummary?: any
   }
   commonPaths?: Record<string, string>
+  mockEndpoints?: any[]
+  testDataSummary?: any
 }
 
 export default function FHIRTestingTool() {
@@ -37,6 +46,15 @@ export default function FHIRTestingTool() {
   const [testResult, setTestResult] = useState<FHIRTestResult | null>(null)
   const [loading, setLoading] = useState(false)
   const [samples, setSamples] = useState<any>(null)
+  
+  // New state for rule testing
+  const [ruleConditions, setRuleConditions] = useState<any[]>([{
+    fhirPath: 'Condition.code.coding.code',
+    operator: 'equals',
+    value: 'U07.1'
+  }])
+  const [logicOperator, setLogicOperator] = useState<'AND' | 'OR'>('AND')
+  const [activeTab, setActiveTab] = useState('resource-test')
 
   const loadSamples = async () => {
     try {
@@ -54,6 +72,10 @@ export default function FHIRTestingTool() {
   }
 
   const runTest = async () => {
+    if (testType === 'liveData') {
+      return runRuleTest()
+    }
+
     if (!fhirResource.trim()) {
       alert('Please provide a FHIR resource')
       return
@@ -122,6 +144,53 @@ export default function FHIRTestingTool() {
     }
   }
 
+  const runRuleTest = async () => {
+    if (ruleConditions.length === 0) {
+      alert('Please add at least one rule condition')
+      return
+    }
+
+    try {
+      setLoading(true)
+      
+      const response = await fetch('/api/rules/validate-fhir', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          testType: 'liveData',
+          conditions: ruleConditions,
+          logicOperator
+        })
+      })
+
+      if (response.ok) {
+        const result = await response.json()
+        setTestResult(result)
+      } else {
+        const error = await response.json()
+        setTestResult({
+          testType: 'error',
+          validation: {
+            errors: [error.error || 'Rule test failed'],
+            warnings: []
+          }
+        })
+      }
+    } catch (error) {
+      setTestResult({
+        testType: 'error',
+        validation: {
+          errors: [`Network error: ${error}`],
+          warnings: []
+        }
+      })
+    } finally {
+      setLoading(false)
+    }
+  }
+
   const loadSample = (sampleType: string) => {
     if (!samples) return
     const sample = samples[sampleType]
@@ -141,251 +210,475 @@ export default function FHIRTestingTool() {
     }
   }
 
+  const addRuleCondition = () => {
+    setRuleConditions([...ruleConditions, {
+      fhirPath: '',
+      operator: 'equals',
+      value: ''
+    }])
+  }
+
+  const updateRuleCondition = (index: number, field: string, value: string) => {
+    const updated = ruleConditions.map((condition, i) => 
+      i === index ? { ...condition, [field]: value } : condition
+    )
+    setRuleConditions(updated)
+  }
+
+  const removeRuleCondition = (index: number) => {
+    setRuleConditions(ruleConditions.filter((_, i) => i !== index))
+  }
+
+  const loadPresetRule = (preset: string) => {
+    switch (preset) {
+      case 'covid-detection':
+        setRuleConditions([{
+          fhirPath: 'Condition.code.coding.code',
+          operator: 'equals',
+          value: 'U07.1'
+        }])
+        break
+      case 'lab-positive':
+        setRuleConditions([{
+          fhirPath: 'Observation.valueCodeableConcept.coding.code',
+          operator: 'equals',
+          value: '260373001'
+        }])
+        break
+      default:
+        break
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-bold text-gray-900">FHIR Testing Tool</h2>
-          <p className="text-gray-600">Test FHIR resource validation and data extraction for eCR rules</p>
+          <p className="text-gray-600">Test FHIR resource validation and eCR rule execution against test data</p>
         </div>
-        <Button onClick={loadSamples} variant="outline" disabled={loading}>
-          <FileText className="mr-2 h-4 w-4" />
-          Load Samples
-        </Button>
+        <div className="flex space-x-2">
+          <Button onClick={loadSamples} variant="outline" disabled={loading}>
+            <FileText className="mr-2 h-4 w-4" />
+            Load Samples
+          </Button>
+          {samples?.testDataSummary && (
+            <Badge variant="outline">
+              Test Data: {Object.values(samples.testDataSummary).reduce((a: number, b: unknown) => a + Number(b), 0)} resources
+            </Badge>
+          )}
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Input Section */}
-        <Card>
-          <CardHeader>
-            <CardTitle>FHIR Resource Input</CardTitle>
-            <CardDescription>
-              Provide a FHIR resource for validation testing
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="testType">Test Type</Label>
-              <Select value={testType} onValueChange={setTestType}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="resource">Resource Validation</SelectItem>
-                  <SelectItem value="bundle">eCR Bundle Validation</SelectItem>
-                  <SelectItem value="extract">FHIRPath Extraction</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
+        <TabsList className="grid w-full grid-cols-2">
+          <TabsTrigger value="resource-test">Resource Testing</TabsTrigger>
+          <TabsTrigger value="rule-test">Rule Testing</TabsTrigger>
+        </TabsList>
 
-            {testType === 'extract' && (
-              <div className="space-y-2">
-                <Label htmlFor="fhirPath">FHIRPath Expression</Label>
-                <Input
-                  id="fhirPath"
-                  value={fhirPath}
-                  onChange={(e) => setFhirPath(e.target.value)}
-                  placeholder="e.g., Patient.name.family"
-                />
-                <p className="text-xs text-gray-500">
-                  Examples: Patient.name.family, Condition.code.coding.code, Observation.valueQuantity.value
-                </p>
-              </div>
-            )}
-
-            <div className="space-y-2">
-              <Label htmlFor="fhirResource">FHIR Resource (JSON)</Label>
-              <Textarea
-                id="fhirResource"
-                value={fhirResource}
-                onChange={(e) => setFhirResource(e.target.value)}
-                placeholder="Paste your FHIR resource JSON here..."
-                rows={12}
-                className="font-mono text-sm"
-              />
-            </div>
-
-            <div className="flex space-x-2">
-              <Button onClick={runTest} disabled={loading} className="flex-1">
-                <Play className="mr-2 h-4 w-4" />
-                {loading ? 'Testing...' : 'Run Test'}
-              </Button>
-            </div>
-
-            {samples && (
-              <div className="space-y-2">
-                <Label>Sample Resources</Label>
-                <div className="grid grid-cols-2 gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => loadSample('patient')}
-                  >
-                    Patient
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => loadSample('condition')}
-                  >
-                    Condition
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => loadSample('observation')}
-                  >
-                    Observation
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => loadSample('ecrBundle')}
-                  >
-                    eCR Bundle
-                  </Button>
-                </div>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* Results Section */}
-        <Card>
-          <CardHeader>
-            <div className="flex items-center justify-between">
-              <div>
-                <CardTitle>Validation Results</CardTitle>
+        {/* Resource Testing Tab */}
+        <TabsContent value="resource-test">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Input Section */}
+            <Card>
+              <CardHeader>
+                <CardTitle>FHIR Resource Input</CardTitle>
                 <CardDescription>
-                  FHIR validation output and extracted data
+                  Provide a FHIR resource for validation testing
                 </CardDescription>
-              </div>
-              {testResult && (
-                <Button variant="ghost" size="sm" onClick={copyResult}>
-                  <Copy className="h-4 w-4" />
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="testType">Test Type</Label>
+                  <Select value={testType} onValueChange={setTestType}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="resource">Resource Validation</SelectItem>
+                      <SelectItem value="bundle">eCR Bundle Validation</SelectItem>
+                      <SelectItem value="extract">FHIRPath Extraction</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {testType === 'extract' && (
+                  <div className="space-y-2">
+                    <Label htmlFor="fhirPath">FHIRPath Expression</Label>
+                    <Input
+                      id="fhirPath"
+                      value={fhirPath}
+                      onChange={(e) => setFhirPath(e.target.value)}
+                      placeholder="e.g., Patient.name.family"
+                    />
+                    <p className="text-xs text-gray-500">
+                      Examples: Patient.name.family, Condition.code.coding.code, Observation.valueQuantity.value
+                    </p>
+                  </div>
+                )}
+
+                <div className="space-y-2">
+                  <Label htmlFor="fhirResource">FHIR Resource (JSON)</Label>
+                  <Textarea
+                    id="fhirResource"
+                    value={fhirResource}
+                    onChange={(e) => setFhirResource(e.target.value)}
+                    placeholder="Paste your FHIR resource here..."
+                    className="min-h-[300px] font-mono text-sm"
+                  />
+                </div>
+
+                {samples && (
+                  <div className="space-y-2">
+                    <Label>Sample Resources</Label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => loadSample('patient')}
+                      >
+                        Patient
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => loadSample('condition')}
+                      >
+                        Condition
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => loadSample('observation')}
+                      >
+                        Observation
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => loadSample('ecrBundle')}
+                      >
+                        eCR Bundle
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                <Button 
+                  onClick={runTest} 
+                  disabled={loading || !fhirResource.trim()}
+                  className="w-full"
+                >
+                  <Play className="mr-2 h-4 w-4" />
+                  {loading ? 'Testing...' : 'Run Test'}
                 </Button>
-              )}
-            </div>
-          </CardHeader>
-          <CardContent>
-            {!testResult ? (
-              <div className="text-center py-12 text-gray-500">
-                Run a test to see validation results
-              </div>
-            ) : (
-              <Tabs defaultValue="summary" className="w-full">
-                <TabsList className="grid w-full grid-cols-3">
-                  <TabsTrigger value="summary">Summary</TabsTrigger>
-                  <TabsTrigger value="issues">Issues</TabsTrigger>
-                  <TabsTrigger value="data">Data</TabsTrigger>
-                </TabsList>
+              </CardContent>
+            </Card>
 
-                <TabsContent value="summary" className="space-y-4">
-                  <div className="flex items-center space-x-2">
-                    {testResult.validation.isValid ? (
-                      <CheckCircle className="h-5 w-5 text-green-500" />
-                    ) : (
-                      <XCircle className="h-5 w-5 text-red-500" />
+            {/* Results Section */}
+            {testResult && (
+              <Card>
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <div>
+                    <CardTitle>Test Results</CardTitle>
+                    <CardDescription>
+                      {testResult.testType.charAt(0).toUpperCase() + testResult.testType.slice(1)} test results
+                    </CardDescription>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={copyResult}
+                  >
+                    <Copy className="h-4 w-4" />
+                  </Button>
+                </CardHeader>
+                <CardContent>
+                  <div className="space-y-4">
+                    {/* Status */}
+                    <div className="flex items-center space-x-2">
+                      {testResult.validation.isValid ? (
+                        <>
+                          <CheckCircle className="h-5 w-5 text-green-500" />
+                          <span className="text-sm font-medium text-green-700">Valid</span>
+                        </>
+                      ) : (
+                        <>
+                          <XCircle className="h-5 w-5 text-red-500" />
+                          <span className="text-sm font-medium text-red-700">Invalid</span>
+                        </>
+                      )}
+                    </div>
+
+                    {/* Errors */}
+                    {testResult.validation.errors?.length > 0 && (
+                      <div>
+                        <h4 className="text-sm font-medium text-red-700 mb-2">Errors:</h4>
+                        <ul className="space-y-1">
+                          {testResult.validation.errors.map((error, index) => (
+                            <li key={index} className="text-sm text-red-600 flex items-start">
+                              <XCircle className="h-4 w-4 mr-2 mt-0.5 flex-shrink-0" />
+                              {error}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
                     )}
-                    <span className="font-medium">
-                      {testResult.validation.isValid ? 'Valid' : 'Invalid'}
-                    </span>
-                    <Badge variant={testResult.validation.isValid ? 'default' : 'destructive'}>
-                      {testResult.testType}
-                    </Badge>
+
+                    {/* Warnings */}
+                    {testResult.validation.warnings?.length > 0 && (
+                      <div>
+                        <h4 className="text-sm font-medium text-yellow-700 mb-2">Warnings:</h4>
+                        <ul className="space-y-1">
+                          {testResult.validation.warnings.map((warning, index) => (
+                            <li key={index} className="text-sm text-yellow-600 flex items-start">
+                              <AlertTriangle className="h-4 w-4 mr-2 mt-0.5 flex-shrink-0" />
+                              {warning}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {/* Extracted Data */}
+                    {testResult.validation.extractedData && (
+                      <div>
+                        <h4 className="text-sm font-medium mb-2">Extracted Data:</h4>
+                        <pre className="bg-gray-50 p-3 rounded text-xs overflow-auto">
+                          {JSON.stringify(testResult.validation.extractedData, null, 2)}
+                        </pre>
+                      </div>
+                    )}
                   </div>
-
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <Label className="text-sm text-gray-600">Errors</Label>
-                      <p className="text-lg font-semibold text-red-600">
-                        {testResult.validation.errors.length}
-                      </p>
-                    </div>
-                    <div>
-                      <Label className="text-sm text-gray-600">Warnings</Label>
-                      <p className="text-lg font-semibold text-yellow-600">
-                        {testResult.validation.warnings.length}
-                      </p>
-                    </div>
-                  </div>
-                </TabsContent>
-
-                <TabsContent value="issues" className="space-y-4">
-                  {testResult.validation.errors.length > 0 && (
-                    <div>
-                      <Label className="flex items-center space-x-1 text-red-600">
-                        <XCircle className="h-4 w-4" />
-                        <span>Errors</span>
-                      </Label>
-                      <div className="space-y-1 mt-2">
-                        {testResult.validation.errors.map((error, index) => (
-                          <div key={index} className="text-sm text-red-600 bg-red-50 p-2 rounded">
-                            {error}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {testResult.validation.warnings.length > 0 && (
-                    <div>
-                      <Label className="flex items-center space-x-1 text-yellow-600">
-                        <AlertTriangle className="h-4 w-4" />
-                        <span>Warnings</span>
-                      </Label>
-                      <div className="space-y-1 mt-2">
-                        {testResult.validation.warnings.map((warning, index) => (
-                          <div key={index} className="text-sm text-yellow-600 bg-yellow-50 p-2 rounded">
-                            {warning}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {testResult.validation.errors.length === 0 && testResult.validation.warnings.length === 0 && (
-                    <div className="text-center py-8 text-gray-500">
-                      No issues found
-                    </div>
-                  )}
-                </TabsContent>
-
-                <TabsContent value="data" className="space-y-4">
-                  {testResult.validation.extractedData !== undefined && (
-                    <div>
-                      <Label>Extracted Data</Label>
-                      <pre className="mt-2 text-xs bg-gray-50 p-3 rounded overflow-auto max-h-64">
-                        {JSON.stringify(testResult.validation.extractedData, null, 2)}
-                      </pre>
-                    </div>
-                  )}
-
-                  {testResult.commonPaths && (
-                    <div>
-                      <Label>Common FHIR Paths</Label>
-                      <div className="mt-2 space-y-1 max-h-64 overflow-auto">
-                        {Object.entries(testResult.commonPaths).map(([key, path]) => (
-                          <div key={key} className="text-xs">
-                            <span className="font-mono text-blue-600">{path}</span>
-                            <span className="text-gray-500 ml-2">({key})</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {!testResult.validation.extractedData && !testResult.commonPaths && (
-                    <div className="text-center py-8 text-gray-500">
-                      No data to display
-                    </div>
-                  )}
-                </TabsContent>
-              </Tabs>
+                </CardContent>
+              </Card>
             )}
-          </CardContent>
-        </Card>
-      </div>
+          </div>
+        </TabsContent>
+
+        {/* Rule Testing Tab */}
+        <TabsContent value="rule-test">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Rule Configuration */}
+            <Card>
+              <CardHeader>
+                <CardTitle>Rule Configuration</CardTitle>
+                <CardDescription>
+                  Define rule conditions to test against mock FHIR data
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <Label>Logic Operator</Label>
+                  <Select value={logicOperator} onValueChange={(v) => setLogicOperator(v as 'AND' | 'OR')}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="AND">AND (All conditions must be true)</SelectItem>
+                      <SelectItem value="OR">OR (Any condition can be true)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Preset Rules</Label>
+                  <div className="grid grid-cols-1 gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => loadPresetRule('covid-detection')}
+                    >
+                      COVID-19 Detection
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => loadPresetRule('lab-positive')}
+                    >
+                      Positive Lab Result
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <Label>Rule Conditions</Label>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={addRuleCondition}
+                    >
+                      <Plus className="h-4 w-4 mr-1" />
+                      Add
+                    </Button>
+                  </div>
+
+                  {ruleConditions.map((condition, index) => (
+                    <div key={index} className="space-y-2 p-3 border rounded">
+                      <div className="flex items-center justify-between">
+                        <h4 className="text-sm font-medium">Condition {index + 1}</h4>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => removeRuleCondition(index)}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                      
+                      <div className="space-y-2">
+                        <Input
+                          placeholder="FHIR Path (e.g., Condition.code.coding.code)"
+                          value={condition.fhirPath}
+                          onChange={(e) => updateRuleCondition(index, 'fhirPath', e.target.value)}
+                        />
+                        <Select 
+                          value={condition.operator}
+                          onValueChange={(v) => updateRuleCondition(index, 'operator', v)}
+                        >
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="equals">Equals</SelectItem>
+                            <SelectItem value="contains">Contains</SelectItem>
+                            <SelectItem value="exists">Exists</SelectItem>
+                            <SelectItem value="greater_than">Greater Than</SelectItem>
+                            <SelectItem value="less_than">Less Than</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <Input
+                          placeholder="Expected value"
+                          value={condition.value}
+                          onChange={(e) => updateRuleCondition(index, 'value', e.target.value)}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <Button 
+                  onClick={runRuleTest} 
+                  disabled={loading || ruleConditions.length === 0}
+                  className="w-full"
+                >
+                  <Play className="mr-2 h-4 w-4" />
+                  {loading ? 'Testing Rule...' : 'Test Rule Against Mock Data'}
+                </Button>
+              </CardContent>
+            </Card>
+
+            {/* Rule Test Results */}
+            {testResult && testResult.testType === 'liveData' && (
+              <Card>
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <div>
+                    <CardTitle>Rule Test Results</CardTitle>
+                    <CardDescription>
+                      Results from testing against mock FHIR data
+                    </CardDescription>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={copyResult}
+                  >
+                    <Copy className="h-4 w-4" />
+                  </Button>
+                </CardHeader>
+                <CardContent>
+                  <div className="space-y-4">
+                    {/* Rule Status */}
+                    <div className="flex items-center space-x-2">
+                      {testResult.validation.overallResult ? (
+                        <>
+                          <CheckCircle className="h-5 w-5 text-green-500" />
+                          <span className="text-sm font-medium text-green-700">Rule Triggered</span>
+                        </>
+                      ) : (
+                        <>
+                          <XCircle className="h-5 w-5 text-orange-500" />
+                          <span className="text-sm font-medium text-orange-700">No Matches Found</span>
+                        </>
+                      )}
+                    </div>
+
+                    {/* Statistics */}
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <p className="text-sm font-medium">Resources Evaluated</p>
+                        <p className="text-2xl font-bold">{testResult.validation.totalResourcesEvaluated || 0}</p>
+                      </div>
+                      <div>
+                        <p className="text-sm font-medium">Matching Resources</p>
+                        <p className="text-2xl font-bold text-green-600">
+                          {testResult.validation.matchingResources?.length || 0}
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Test Data Summary */}
+                    {testResult.validation.testDataSummary && (
+                      <div>
+                        <h4 className="text-sm font-medium mb-2">Test Data Summary:</h4>
+                        <div className="bg-gray-50 p-3 rounded">
+                          {Object.entries(testResult.validation.testDataSummary).map(([type, count]) => (
+                            <div key={type} className="flex justify-between text-sm">
+                              <span>{type}:</span>
+                              <Badge variant="outline">{String(count)}</Badge>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Errors */}
+                    {testResult.validation.errors?.length > 0 && (
+                      <div>
+                        <h4 className="text-sm font-medium text-red-700 mb-2">Errors:</h4>
+                        <ul className="space-y-1">
+                          {testResult.validation.errors.map((error, index) => (
+                            <li key={index} className="text-sm text-red-600 flex items-start">
+                              <XCircle className="h-4 w-4 mr-2 mt-0.5 flex-shrink-0" />
+                              {error}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {/* Matching Resources Preview */}
+                    {testResult.validation.matchingResources && testResult.validation.matchingResources.length > 0 && (
+                      <div>
+                        <h4 className="text-sm font-medium mb-2">Matching Resources:</h4>
+                        <div className="space-y-2 max-h-48 overflow-auto">
+                          {testResult.validation.matchingResources.slice(0, 3).map((resource: any, index: number) => (
+                            <div key={index} className="bg-gray-50 p-3 rounded text-xs">
+                              <div className="flex justify-between items-center mb-1">
+                                <Badge variant="outline">{resource.resourceType}</Badge>
+                                <span className="text-gray-600">{resource.id}</span>
+                              </div>
+                              <pre className="text-xs overflow-hidden">
+                                {JSON.stringify(resource, null, 1).slice(0, 200)}...
+                              </pre>
+                            </div>
+                          ))}
+                          {testResult.validation.matchingResources.length > 3 && (
+                            <p className="text-xs text-gray-500 text-center">
+                              +{testResult.validation.matchingResources.length - 3} more resources
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+          </div>
+        </TabsContent>
+      </Tabs>
     </div>
   )
 }

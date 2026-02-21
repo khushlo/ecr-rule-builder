@@ -1,0 +1,32 @@
+{
+  "resourceType": "Immunization",
+  "id": "immunization-001",
+  "meta": {
+    "versionId": "1",
+    "lastUpdated": "2024-01-15T10:00:00Z"
+  },
+  "status": "completed",
+  "vaccineCode": {
+    "coding": [
+      {
+        "system": "http://hl7.org/fhir/sid/cvx",
+        "code": "207",
+        "display": "SARS-COV-2 (COVID-19) vaccine, mRNA, spike protein, LNP, preservative free, 30 mcg/0.3mL dose"
+      }
+    ]
+  },
+  "patient": {
+    "reference": "Patient/patient-001",
+    "display": "John William Smith"
+  },
+  "occurrenceDateTime": "2024-01-15T10:00:00Z",
+  "primarySource": true,
+  "lotNumber": "ABC123",
+  "expirationDate": "2024-12-31",
+  "doseQuantity": {
+    "value": 0.3,
+    "unit": "mL",
+    "system": "http://unitsofmeasure.org",
+    "code": "mL"
+  }
+}
